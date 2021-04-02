@@ -36,6 +36,7 @@ import (
 	"syscall"
 
 	"context"
+	"github.com/intel-go/cpuid"
 )
 
 // Machine describes the machine type qemu will emulate.
@@ -224,6 +225,9 @@ type ObjectType string
 const (
 	// MemoryBackendFile represents a guest memory mapped file.
 	MemoryBackendFile ObjectType = "memory-backend-file"
+
+	// SevGuest represents an SEV guest object
+        SevGuest ObjectType = "sev-guest"
 )
 
 // Object is a qemu object representation.
@@ -256,6 +260,12 @@ func (object Object) Valid() bool {
 			return false
 		}
 
+	case SevGuest:
+                if object.ID == "" {
+                        return false
+                }
+
+
 	default:
 		return false
 	}
@@ -265,31 +275,54 @@ func (object Object) Valid() bool {
 
 // QemuParams returns the qemu parameters built out of this Object device.
 func (object Object) QemuParams(config *Config) []string {
-	var objectParams []string
-	var deviceParams []string
-	var qemuParams []string
+        var objectParams []string
+        var deviceParams []string
+        var machineParams []string
+        var qemuParams []string
 
-	deviceParams = append(deviceParams, string(object.Driver))
-	deviceParams = append(deviceParams, fmt.Sprintf(",id=%s", object.DeviceID))
+        switch object.Type {
+        case MemoryBackendFile:
+                deviceParams = append(deviceParams, string(object.Driver))
+                deviceParams = append(deviceParams, fmt.Sprintf(",id=%s", object.DeviceID))
+                deviceParams = append(deviceParams, fmt.Sprintf(",memdev=%s", object.ID))
 
-	switch object.Type {
-	case MemoryBackendFile:
-		objectParams = append(objectParams, string(object.Type))
-		objectParams = append(objectParams, fmt.Sprintf(",id=%s", object.ID))
-		objectParams = append(objectParams, fmt.Sprintf(",mem-path=%s", object.MemPath))
-		objectParams = append(objectParams, fmt.Sprintf(",size=%d", object.Size))
+                objectParams = append(objectParams, string(object.Type))
+                objectParams = append(objectParams, fmt.Sprintf(",id=%s", object.ID))
+                objectParams = append(objectParams, fmt.Sprintf(",mem-path=%s", object.MemPath))
+                objectParams = append(objectParams, fmt.Sprintf(",size=%d", object.Size))
 
-		deviceParams = append(deviceParams, fmt.Sprintf(",memdev=%s", object.ID))
-	}
+        case SevGuest:
+                ID := fmt.Sprintf(",id=%s", object.ID)
+                CBitPos := fmt.Sprintf(",cbitpos=%d", cpuid.MemEncrypt.CBitPosition)
+                ReducedPhysBits := fmt.Sprintf(",reduced-phys-bits=%d", cpuid.MemEncrypt.PhysAddrReduction)
+                MemoryEncryption := fmt.Sprintf("memory-encryption=%s", object.ID)
 
-	qemuParams = append(qemuParams, "-device")
-	qemuParams = append(qemuParams, strings.Join(deviceParams, ""))
+                objectParams = append(objectParams, string(object.Type))
+                objectParams = append(objectParams, ID)
+                objectParams = append(objectParams, CBitPos)
+                objectParams = append(objectParams, ReducedPhysBits)
 
-	qemuParams = append(qemuParams, "-object")
-	qemuParams = append(qemuParams, strings.Join(objectParams, ""))
+                machineParams = append(machineParams, MemoryEncryption)
+        }
 
-	return qemuParams
+        if len(deviceParams) > 0 {
+                qemuParams = append(qemuParams, "-device")
+                qemuParams = append(qemuParams, strings.Join(deviceParams, ""))
+        }
+
+        if len(objectParams) > 0 {
+                qemuParams = append(qemuParams, "-object")
+                qemuParams = append(qemuParams, strings.Join(objectParams, ""))
+        }
+
+        if len(machineParams) > 0 {
+                qemuParams = append(qemuParams, "-machine")
+                qemuParams = append(qemuParams, strings.Join(machineParams, ""))
+        }
+
+        return qemuParams
 }
+
 
 // Virtio9PMultidev filesystem behaviour to deal
 // with multiple devices being shared with a 9p export.
@@ -374,6 +407,10 @@ type FSDevice struct {
 	// Multidev is the filesystem behaviour to deal
 	// with multiple devices being shared with a 9p export
 	Multidev Virtio9PMultidev
+
+	 // IOMMUPlatform indicates whether or not IOVA translation is required
+        IOMMUPlatform bool
+
 }
 
 // Virtio9PTransport is a map of the virtio-9p device name that corresponds
@@ -400,20 +437,30 @@ func (fsdev FSDevice) QemuParams(config *Config) []string {
 	var qemuParams []string
 
 	deviceParams = append(deviceParams, fsdev.deviceName(config))
-	if s := fsdev.Transport.disableModern(config, fsdev.DisableModern); s != "" {
-		deviceParams = append(deviceParams, fmt.Sprintf(",%s", s))
+        if s := fsdev.Transport.disableModern(config, fsdev.DisableModern); s != "" {
+                deviceParams = append(deviceParams, fmt.Sprintf(",%s", s))
+        }
+        deviceParams = append(deviceParams, fmt.Sprintf(",fsdev=%s", fsdev.ID))
+        deviceParams = append(deviceParams, fmt.Sprintf(",mount_tag=%s", fsdev.MountTag))
+        if fsdev.Transport.isVirtioPCI(config) {
+                deviceParams = append(deviceParams, fmt.Sprintf(",romfile=%s", fsdev.ROMFile))
+        }
+        if fsdev.Transport.isVirtioCCW(config) {
+                if config.Knobs.IOMMUPlatform {
+                        deviceParams = append(deviceParams, ",iommu_platform=true")
+                        deviceParams = append(deviceParams, ",iommu_platform=on")
+                }
+                deviceParams = append(deviceParams, fmt.Sprintf(",devno=%s", fsdev.DevNo))
+        }
+
+	if fsdev.DisableModern {
+                deviceParams = append(deviceParams, ",disable-modern=true")
+        } else {
+                deviceParams = append(deviceParams, ",disable-legacy=on")
 	}
-	deviceParams = append(deviceParams, fmt.Sprintf(",fsdev=%s", fsdev.ID))
-	deviceParams = append(deviceParams, fmt.Sprintf(",mount_tag=%s", fsdev.MountTag))
-	if fsdev.Transport.isVirtioPCI(config) {
-		deviceParams = append(deviceParams, fmt.Sprintf(",romfile=%s", fsdev.ROMFile))
-	}
-	if fsdev.Transport.isVirtioCCW(config) {
-		if config.Knobs.IOMMUPlatform {
-			deviceParams = append(deviceParams, ",iommu_platform=on")
-		}
-		deviceParams = append(deviceParams, fmt.Sprintf(",devno=%s", fsdev.DevNo))
-	}
+
+        deviceParams = append(deviceParams, ",iommu_platform=true")
+        deviceParams = append(deviceParams, ",iommu_platform=on")
 
 	fsParams = append(fsParams, string(fsdev.FSDriver))
 	fsParams = append(fsParams, fmt.Sprintf(",id=%s", fsdev.ID))
@@ -544,6 +591,7 @@ func (cdev CharDevice) QemuParams(config *Config) []string {
 
 	if cdev.Driver == VirtioSerial && cdev.Transport.isVirtioCCW(config) {
 		if config.Knobs.IOMMUPlatform {
+			deviceParams = append(deviceParams, ",iommu_platform=true")
 			deviceParams = append(deviceParams, ",iommu_platform=on")
 		}
 		deviceParams = append(deviceParams, fmt.Sprintf(",devno=%s", cdev.DevNo))
@@ -726,6 +774,10 @@ type NetDevice struct {
 
 	// Transport is the virtio transport for this device.
 	Transport VirtioTransport
+
+	// IOMMUPlatform indicates whether or not IOVA translation is required
+        IOMMUPlatform bool
+
 }
 
 // VirtioNetTransport is a map of the virtio-net device name that corresponds
@@ -803,6 +855,12 @@ func (netdev NetDevice) QemuDeviceParams(config *Config) []string {
 		deviceParams = append(deviceParams, fmt.Sprintf(",%s", s))
 	}
 
+	if netdev.IOMMUPlatform {
+                deviceParams = append(deviceParams, ",iommu_platform=true")
+                deviceParams = append(deviceParams, ",iommu_platform=on")
+        }
+
+
 	if len(netdev.FDs) > 0 {
 		// Note: We are appending to the device params here
 		deviceParams = append(deviceParams, netdev.mqParameter(config))
@@ -814,6 +872,7 @@ func (netdev NetDevice) QemuDeviceParams(config *Config) []string {
 
 	if netdev.Transport.isVirtioCCW(config) {
 		if config.Knobs.IOMMUPlatform {
+			deviceParams = append(deviceParams, ",iommu_platform=true")
 			deviceParams = append(deviceParams, ",iommu_platform=on")
 		}
 		deviceParams = append(deviceParams, fmt.Sprintf(",devno=%s", netdev.DevNo))
@@ -920,6 +979,9 @@ type SerialDevice struct {
 
 	// MaxPorts is the maximum number of ports for this device.
 	MaxPorts uint
+
+	// IommuPlatform indicates whether or not IOVA translation is required
+        IOMMUPlatform bool
 }
 
 // Valid returns true if the SerialDevice structure is valid and complete.
@@ -937,9 +999,17 @@ func (dev SerialDevice) QemuParams(config *Config) []string {
 	var qemuParams []string
 
 	deviceParams = append(deviceParams, dev.deviceName(config))
+
 	if s := dev.Transport.disableModern(config, dev.DisableModern); s != "" {
 		deviceParams = append(deviceParams, fmt.Sprintf(",%s", s))
 	}
+
+	if dev.DisableModern {
+                deviceParams = append(deviceParams, ",disable-modern=true")
+        } else {
+                deviceParams = append(deviceParams, ",disable-legacy=on")
+        }
+
 	deviceParams = append(deviceParams, fmt.Sprintf(",id=%s", dev.ID))
 	if dev.Transport.isVirtioPCI(config) {
 		deviceParams = append(deviceParams, fmt.Sprintf(",romfile=%s", dev.ROMFile))
@@ -950,10 +1020,18 @@ func (dev SerialDevice) QemuParams(config *Config) []string {
 
 	if dev.Transport.isVirtioCCW(config) {
 		if config.Knobs.IOMMUPlatform {
+			deviceParams = append(deviceParams, ",iommu_platform=true")
 			deviceParams = append(deviceParams, ",iommu_platform=on")
 		}
 		deviceParams = append(deviceParams, fmt.Sprintf(",devno=%s", dev.DevNo))
 	}
+
+	if dev.IOMMUPlatform == true {
+                deviceParams = append(deviceParams, ",iommu_platform=true")
+                deviceParams = append(deviceParams, ",iommu_platform=on")
+        }
+
+	
 
 	qemuParams = append(qemuParams, "-device")
 	qemuParams = append(qemuParams, strings.Join(deviceParams, ""))
@@ -1034,6 +1112,9 @@ type BlockDevice struct {
 
 	// Transport is the virtio transport for this device.
 	Transport VirtioTransport
+
+	 // Require IOVA translation for this device
+        IOMMUPlatform bool
 }
 
 // VirtioBlockTransport is a map of the virtio-blk device name that corresponds
@@ -1083,6 +1164,11 @@ func (blkdev BlockDevice) QemuParams(config *Config) []string {
 	if blkdev.ShareRW {
 		deviceParams = append(deviceParams, fmt.Sprintf(",share-rw=on"))
 	}
+
+	if blkdev.IOMMUPlatform == true {
+                deviceParams = append(deviceParams, ",iommu_platform=true")
+                deviceParams = append(deviceParams, ",iommu_platform=on")
+        }
 
 	blkParams = append(blkParams, fmt.Sprintf("id=%s", blkdev.ID))
 	blkParams = append(blkParams, fmt.Sprintf(",file=%s", blkdev.File))
@@ -1504,6 +1590,9 @@ type SCSIController struct {
 
 	// Transport is the virtio transport for this device.
 	Transport VirtioTransport
+
+	// IommuPlatform indicates whether or not IOVA translation is required
+        IOMMUPlatform bool
 }
 
 // SCSIControllerTransport is a map of the virtio-scsi device name that
@@ -1535,6 +1624,11 @@ func (scsiCon SCSIController) QemuParams(config *Config) []string {
 	if s := scsiCon.Transport.disableModern(config, scsiCon.DisableModern); s != "" {
 		devParams = append(devParams, s)
 	}
+	if scsiCon.DisableModern {
+                devParams = append(devParams, fmt.Sprintf("disable-modern=true"))
+        } else {
+                devParams = append(devParams, fmt.Sprintf("disable-legacy=on"))
+	}
 	if scsiCon.IOThread != "" {
 		devParams = append(devParams, fmt.Sprintf("iothread=%s", scsiCon.IOThread))
 	}
@@ -1544,10 +1638,16 @@ func (scsiCon SCSIController) QemuParams(config *Config) []string {
 
 	if scsiCon.Transport.isVirtioCCW(config) {
 		if config.Knobs.IOMMUPlatform {
-			devParams = append(devParams, ",iommu_platform=on")
+			devParams = append(devParams, "iommu_platform=true")
+			devParams = append(devParams, "iommu_platform=on")
 		}
 		devParams = append(devParams, fmt.Sprintf("devno=%s", scsiCon.DevNo))
 	}
+
+	if scsiCon.IOMMUPlatform {
+                devParams = append(devParams, fmt.Sprintf("iommu_platform=true"))
+                devParams = append(devParams, fmt.Sprintf("iommu_platform=on"))
+        }
 
 	qemuParams = append(qemuParams, "-device")
 	qemuParams = append(qemuParams, strings.Join(devParams, ","))
@@ -1727,10 +1827,14 @@ func (vsock VSOCKDevice) QemuParams(config *Config) []string {
 		deviceParams = append(deviceParams, fmt.Sprintf(",romfile=%s", vsock.ROMFile))
 	}
 
+        deviceParams = append(deviceParams, ",iommu_platform=true")
+        deviceParams = append(deviceParams, ",iommu_platform=on")
+
 	if vsock.Transport.isVirtioCCW(config) {
 		if config.Knobs.IOMMUPlatform {
-			deviceParams = append(deviceParams, ",iommu_platform=on")
-		}
+                       deviceParams = append(deviceParams, ",iommu_platform=true")
+                       deviceParams = append(deviceParams, ",iommu_platform=on")
+                }
 		deviceParams = append(deviceParams, fmt.Sprintf(",devno=%s", vsock.DevNo))
 	}
 
@@ -1766,6 +1870,8 @@ type RngDevice struct {
 	DevNo string
 	// Transport is the virtio transport for this device.
 	Transport VirtioTransport
+	 // IOMMUPlatform indicates whether or not IOVA translation is required
+        IOMMUPlatform bool
 }
 
 // RngDeviceTransport is a map of the virtio-rng device name that corresponds
@@ -1800,12 +1906,16 @@ func (v RngDevice) QemuParams(config *Config) []string {
 		deviceParams = append(deviceParams, fmt.Sprintf("romfile=%s", v.ROMFile))
 	}
 
+
 	if v.Transport.isVirtioCCW(config) {
-		if config.Knobs.IOMMUPlatform {
-			deviceParams = append(deviceParams, ",iommu_platform=on")
-		}
 		deviceParams = append(deviceParams, fmt.Sprintf("devno=%s", v.DevNo))
 	}
+	
+	deviceParams = append(deviceParams, "iommu_platform=true")
+	deviceParams = append(deviceParams, "iommu_platform=on")
+
+        deviceParams = append(deviceParams, "disable-modern=false")
+        deviceParams = append(deviceParams, "disable-legacy=on")
 
 	if v.Filename != "" {
 		objectParams = append(objectParams, "filename="+v.Filename)
@@ -1818,6 +1928,7 @@ func (v RngDevice) QemuParams(config *Config) []string {
 	if v.Period > 0 {
 		deviceParams = append(deviceParams, fmt.Sprintf("period=%d", v.Period))
 	}
+
 
 	qemuParams = append(qemuParams, "-object")
 	qemuParams = append(qemuParams, strings.Join(objectParams, ","))
@@ -2152,6 +2263,9 @@ type Knobs struct {
 
 	// IOMMUPlatform will enable IOMMU for supported devices
 	IOMMUPlatform bool
+
+	// MemEncrypt will enable memory encryption
+        MemEncrypt bool
 }
 
 // IOThread allows IO to be performed on a separate thread.
@@ -2523,10 +2637,15 @@ func (config *Config) appendKnobs() {
 }
 
 func (config *Config) appendBios() {
-	if config.Bios != "" {
-		config.qemuParams = append(config.qemuParams, "-bios")
-		config.qemuParams = append(config.qemuParams, config.Bios)
-	}
+        if config.Bios != "" {
+                if config.Knobs.MemEncrypt == true {
+                        config.qemuParams = append(config.qemuParams, "-drive")
+                        config.qemuParams = append(config.qemuParams, fmt.Sprintf("if=pflash,format=raw,unit=0,file=%s,readonly", config.Bios))
+                } else {
+                        config.qemuParams = append(config.qemuParams, "-bios")
+                        config.qemuParams = append(config.qemuParams, config.Bios)
+                }
+        }
 }
 
 func (config *Config) appendIOThreads() {
