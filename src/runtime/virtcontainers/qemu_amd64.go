@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/kata-containers/kata-containers/src/runtime/virtcontainers/types"
-
+	
 	govmmQemu "github.com/intel/govmm/qemu"
 )
 
@@ -26,7 +26,7 @@ const (
 
 	defaultQemuMachineType = QemuPC
 
-	defaultQemuMachineOptions = "accel=kvm,kernel_irqchip"
+	defaultQemuMachineOptions = "accel=kvm,kernel_irqchip,nvdimm"
 
 	qmpMigrationWaitTimeout = 5 * time.Second
 )
@@ -38,22 +38,47 @@ var qemuPaths = map[string]string{
 	QemuMicrovm: defaultQemuPath,
 }
 
-var kernelParams = []Param{
-	{"tsc", "reliable"},
-	{"no_timer_check", ""},
-	{"rcupdate.rcu_expedited", "1"},
-	{"i8042.direct", "1"},
-	{"i8042.dumbkbd", "1"},
-	{"i8042.nopnp", "1"},
-	{"i8042.noaux", "1"},
-	{"noreplace-smp", ""},
-	{"reboot", "k"},
-	{"console", "hvc0"},
-	{"console", "hvc1"},
-	{"cryptomgr.notests", ""},
-	{"net.ifnames", "0"},
-	{"pci", "lastbus=0"},
+var kernelRootParams = []Param{
+        {"root", "/dev/pmem0p1"},
+        {"rootflags", "dax,data=ordered,errors=remount-ro rw"},
+        {"rootfstype", "ext4"},
 }
+
+var kernelParams = []Param{
+        {"tsc", "reliable"},
+        {"no_timer_check", ""},
+        {"rcupdate.rcu_expedited", "1"},
+        {"i8042.direct", "1"},
+        {"i8042.dumbkbd", "1"},
+        {"i8042.nopnp", "1"},
+        {"i8042.noaux", "1"},
+        {"noreplace-smp", ""},
+        {"reboot", "k"},
+        {"console", "hvc0"},
+        {"console", "hvc1"},
+        {"iommu", "off"},
+        {"cryptomgr.notests", ""},
+        {"net.ifnames", "0"},
+        {"pci", "lastbus=0"},
+}
+
+
+//var kernelParams = []Param{
+//	{"tsc", "reliable"},
+//	{"no_timer_check", ""},
+//	{"rcupdate.rcu_expedited", "1"},
+//	{"i8042.direct", "1"},
+//	{"i8042.dumbkbd", "1"},
+//	{"i8042.nopnp", "1"},
+//	{"i8042.noaux", "1"},
+//	{"noreplace-smp", ""},
+//	{"reboot", "k"},
+//	{"console", "hvc0"},
+//	{"console", "hvc1"},
+//	{"cryptomgr.notests", ""},
+//	{"net.ifnames", "0"},
+//	{"pci", "lastbus=0"},
+//}
 
 var supportedQemuMachines = []govmmQemu.Machine{
 	{
@@ -77,6 +102,8 @@ var supportedQemuMachines = []govmmQemu.Machine{
 		Options: defaultQemuMachineOptions,
 	},
 }
+
+var defaultMemEncrypt = false
 
 // MaxQemuVCPUs returns the maximum number of vCPUs supported
 func MaxQemuVCPUs() uint32 {
@@ -128,6 +155,7 @@ func newQemuArch(config HypervisorConfig) (qemuArch, error) {
 			kernelParams:         kernelParams,
 			disableNvdimm:        config.DisableImageNvdimm,
 			dax:                  true,
+			memEncrypt:           defaultMemEncrypt,
 		},
 		vmFactory: factory,
 	}
@@ -180,6 +208,14 @@ func (q *qemuAmd64) supportGuestMemoryHotplug() bool {
 }
 
 func (q *qemuAmd64) appendImage(devices []govmmQemu.Device, path string) ([]govmmQemu.Device, error) {
+	if q.memEncrypt == true {
+                // Use a block device for the image instead of NVDIMM
+                base := qemuArchBase {
+                        nestedRun:  q.nestedRun,
+                        memEncrypt: q.memEncrypt,
+                }
+                return base.appendImage(devices, path)
+        }
 	if !q.disableNvdimm {
 		return q.appendNvdimmImage(devices, path)
 	}
@@ -189,4 +225,15 @@ func (q *qemuAmd64) appendImage(devices []govmmQemu.Device, path string) ([]govm
 // appendBridges appends to devices the given bridges
 func (q *qemuAmd64) appendBridges(devices []govmmQemu.Device) []govmmQemu.Device {
 	return genericAppendBridges(devices, q.Bridges, q.qemuMachine.Type)
+}
+
+func (q *qemuAmd64) appendMemEncrypt(devices []govmmQemu.Device) []govmmQemu.Device {
+        object := govmmQemu.Object{
+                Type: govmmQemu.SevGuest,
+                ID:   "sev0",
+        }
+
+        devices = append(devices, object)
+
+        return devices
 }

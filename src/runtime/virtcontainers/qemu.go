@@ -292,6 +292,12 @@ func (q *qemu) setup(id string, hypervisorConfig *HypervisorConfig) error {
 		q.arch.disableVhostNet()
 	}
 
+	if q.config.MemEncrypt == true {
+                q.arch.enableMemEncrypt()
+        } else {
+                q.arch.disableMemEncrypt()
+        }
+
 	return nil
 }
 
@@ -488,6 +494,7 @@ func (q *qemu) createSandbox(ctx context.Context, id string, networkNS NetworkNa
 		Realtime:      q.config.Realtime,
 		Mlock:         q.config.Mlock,
 		IOMMUPlatform: q.config.IOMMUPlatform,
+		MemEncrypt:   q.config.MemEncrypt,
 	}
 
 	kernelPath, err := q.config.KernelAssetPath()
@@ -552,6 +559,13 @@ func (q *qemu) createSandbox(ctx context.Context, id string, networkNS NetworkNa
 	if err != nil {
 		return err
 	}
+
+	if q.config.MemEncrypt == true {
+                devices = q.arch.appendMemEncrypt(devices)
+                if err != nil {
+                        return err
+                }
+        }
 
 	cpuModel := q.arch.cpuModel()
 	cpuModel += "," + q.config.CPUFeatures
