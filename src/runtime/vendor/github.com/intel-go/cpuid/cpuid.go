@@ -76,6 +76,15 @@ type CacheDescriptor struct {
 	Partioning int    // partitioning
 }
 
+type MemoryEncryptionCapabilities struct {
+        PhysAddrReduction  uint32
+        CBitPosition       uint32
+        NumEncryptedGuests uint32
+        MinSevNoEsAsid     uint32
+}
+
+var MemEncrypt MemoryEncryptionCapabilities
+
 // ThermalSensorInterruptThresholds is the number of interrupt thresholds in digital thermal sensor.
 var ThermalSensorInterruptThresholds uint32
 
@@ -92,6 +101,11 @@ func HasExtendedFeature(feature uint64) bool {
 // HasExtraFeature to check if features from ExtraFeatureNames map are available on the current processor
 func HasExtraFeature(feature uint64) bool {
 	return (extraFeatureFlags & feature) != 0
+}
+
+// HasMemEncryptFeature to check if features from MemEncryptFeatureNames map are available on the current processor
+func HasMemEncryptFeature(feature uint32) bool {
+        return (memEncryptFeatureFlags & feature) != 0
 }
 
 // HasThermalAndPowerFeature to check if features from ThermalAndPowerFeatureNames map are available on the current processor
@@ -273,6 +287,13 @@ var ExtraFeatureNames = map[uint64]string{ // From leaf 8000 0001
 	_3DNOW:       "3DNOW",
 }
 
+var MemEncryptFeatureNames = map[uint32]string{ // From leaf 8000 001f
+        SME:            "SME",
+        SEV:            "SEV",
+        PAGE_FLUSH_MSR: "PageFlushMSR",
+        SEV_ES:         "SEV-ES",
+}
+
 var brandStrings = map[string]int{
 	"AMDisbetter!": AMD,
 	"AuthenticAMD": AMD,
@@ -304,6 +325,7 @@ var featureFlags uint64
 var thermalAndPowerFeatureFlags uint32
 var extendedFeatureFlags uint64
 var extraFeatureFlags uint64
+var memEncryptFeatureFlags uint32
 
 const (
 	UKNOWN = iota

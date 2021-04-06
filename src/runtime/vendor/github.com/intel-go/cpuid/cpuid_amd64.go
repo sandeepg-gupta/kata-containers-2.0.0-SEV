@@ -26,6 +26,7 @@ func detectFeatures() {
 	leaf0x80000004()
 	leaf0x80000005()
 	leaf0x80000006()
+	leaf0x8000001f()
 
 	if HasFeature(OSXSAVE) {
 		eax, _ := xgetbv_low(0)
@@ -37,6 +38,14 @@ func detectFeatures() {
 		}
 	}
 }
+
+// Memory encryption capabilities
+const (
+        SME = iota
+        SEV
+        PAGE_FLUSH_MSR
+        SEV_ES
+)
 
 var leaf02Names = [...]string{
 	"NULL",
@@ -458,6 +467,35 @@ func leaf0x80000006() {
 			})
 	}
 }
+
+func leaf0x8000001f() {
+
+        if maxExtendedInputValue < 0x8000001f {
+                return
+        }
+
+        if brandId != AMD {
+                return
+        }
+
+        eax, ebx, ecx, edx := cpuid_low(0x8000001f, 0)
+
+        // Parse EAX
+        memEncryptFeatureFlags = eax
+
+        if HasMemEncryptFeature(SME) || HasMemEncryptFeature(SEV) {
+                // Parse EBX
+                MemEncrypt.CBitPosition = ebx & 0x3F
+                MemEncrypt.PhysAddrReduction = (ebx >> 6) & 0x3F
+
+                // Parse ECX
+                MemEncrypt.NumEncryptedGuests = ecx
+
+                // Parse EDX
+                MemEncrypt.MinSevNoEsAsid = edx
+        }
+}
+
 
 // TODO split fused descritops with bits in high key's byte like for 0x49
 var leaf02Descriptors = map[int16]CacheDescriptor{
